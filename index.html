@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Изонькин помощник · подготовка в магистратуру</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">Изонькин помощник ✨</span>
+      <span class="sub">РГГУ · Брендинг и деловая репутация · вступительное</span>
+    </div>
+    <nav class="modes">
+      <button data-view="dashboard" class="active">Дашборд</button>
+      <button data-view="study">Изучение</button>
+      <button data-view="topics">Темы</button>
+      <button data-view="flashcards">Карточки</button>
+      <button data-view="test">Тест</button>
+      <button data-view="daily">Ежедневный микс</button>
+    </nav>
+  </header>
+
+  <main id="app"></main>
+
+  <footer class="bottombar">
+    <span id="progress-summary">—</span>
+    <span class="footer-actions">
+      <button id="reset-stats" class="link-btn">Сбросить статистику теста</button>
+      <button id="reset-progress" class="link-btn">Сбросить весь прогресс</button>
+    </span>
+  </footer>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
