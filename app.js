@@ -42,6 +42,7 @@ const views = {
   topic:     renderTopicDetail,   // ?id=N
   flashcards: renderFlashcards,
   test:      renderTest,
+  exam:      renderExam,
   daily:     renderDaily,
 };
 
@@ -66,6 +67,7 @@ function parseHash() {
 
 function render() {
   const { view, params } = parseHash();
+  if (view !== 'exam') stopExamTimer();
   const fn = views[view] || renderDashboard;
   navButtons.forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   app.innerHTML = '';
@@ -774,6 +776,241 @@ function advanceLesson(toStage) {
   progress.lessons[lessonState.topicId] = { stage: toStage, completed: toStage === 'done' };
   saveProgress();
   render();
+}
+
+// ——— ЭКЗАМЕН (пробный вступительный) ———
+const EXAM_KEY = 'rhhu_exam_history_v1';
+let examState = null;
+let examTimerId = null;
+
+function loadExamHistory() {
+  try { return JSON.parse(localStorage.getItem(EXAM_KEY)) || []; } catch { return []; }
+}
+function saveExamAttempt(a) {
+  const h = loadExamHistory();
+  h.push(a);
+  localStorage.setItem(EXAM_KEY, JSON.stringify(h));
+}
+function stopExamTimer() { if (examTimerId) { clearInterval(examTimerId); examTimerId = null; } }
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function renderExam() {
+  if (examState && examState.finished) return renderExamResult();
+  if (examState) return renderExamRunning();
+  return renderExamIntro();
+}
+
+function renderExamIntro() {
+  let count = 40, minutes = 60;
+  const history = loadExamHistory();
+  const countSel = el('select', { onChange: (e) => count = Number(e.target.value) },
+    ...[30, 40, 50].map((n) => el('option', { value: n, selected: n === 40 ? '' : false }, `${n} вопросов`)));
+  const timeSel = el('select', { onChange: (e) => minutes = Number(e.target.value) },
+    ...[45, 60, 90].map((n) => el('option', { value: n, selected: n === 60 ? '' : false }, `${n} минут`)));
+
+  app.append(
+    el('h1', { class: 'h1' }, 'Пробный экзамен'),
+    el('p', { class: 'muted' }, 'Формат, приближённый к вступительному в магистратуру РГГУ: случайные вопросы из всех 36 тем, таймер, без подсказок и пояснений во время теста. Оценка и разбор ошибок — в конце.'),
+    el('div', { class: 'card' },
+      el('div', { class: 'h2' }, 'Настройки'),
+      el('div', { class: 'row', style: 'align-items:center' },
+        el('span', { class: 'muted' }, 'Вопросов:'), countSel,
+        el('span', { class: 'muted', style: 'margin-left:10px' }, 'Время:'), timeSel,
+      ),
+      el('div', { style: 'margin-top:16px' },
+        el('button', { class: 'btn', onClick: () => startExam(count, minutes) }, '▶ Начать экзамен'),
+      ),
+      el('p', { class: 'muted', style: 'margin-top:12px;font-size:13px' },
+        'Совет: пройди сейчас, чтобы увидеть базовый уровень, и ещё раз перед 13 августа — результаты сохранятся ниже для сравнения.'),
+    ),
+    examHistoryCard(history),
+  );
+}
+
+function examHistoryCard(history) {
+  if (!history.length) {
+    return el('div', { class: 'card' },
+      el('div', { class: 'h2' }, 'История попыток'),
+      el('p', { class: 'muted' }, 'Пока нет пройденных экзаменов. Первый результат появится здесь.'));
+  }
+  return el('div', { class: 'card' },
+    el('div', { class: 'h2' }, 'История попыток'),
+    ...history.slice().reverse().map((a) =>
+      el('div', { class: 'exam-hist-row' },
+        el('span', {}, a.dateStr),
+        el('span', { class: 'muted' }, `${a.correct}/${a.total}`),
+        el('span', { style: `font-weight:700;color:${a.pct >= 60 ? 'var(--good)' : 'var(--bad)'}` }, `${a.pct}%`),
+        el('span', { class: 'muted' }, fmtTime(a.durationSec)),
+      )),
+  );
+}
+
+function startExam(count, minutes) {
+  const questions = shuffle(allMcq()).slice(0, Math.min(count, allMcq().length));
+  examState = {
+    questions,
+    answers: new Array(questions.length).fill(null),
+    idx: 0,
+    startMs: Date.now(),
+    limitSec: minutes * 60,
+    finished: false,
+  };
+  stopExamTimer();
+  examTimerId = setInterval(() => {
+    if (!examState || examState.finished) { stopExamTimer(); return; }
+    const remain = examState.limitSec - (Date.now() - examState.startMs) / 1000;
+    const t = document.getElementById('exam-timer');
+    if (t) { t.textContent = fmtTime(remain); if (remain <= 60) t.classList.add('low'); }
+    if (remain <= 0) finishExam();
+  }, 1000);
+  navigate('exam');
+  render();
+}
+
+function renderExamRunning() {
+  const st = examState;
+  const q = st.questions[st.idx];
+  const answered = st.answers.filter((a) => a !== null).length;
+  const remain = st.limitSec - (Date.now() - st.startMs) / 1000;
+
+  app.append(
+    el('div', { class: 'exam-bar' },
+      el('div', {},
+        el('strong', {}, `Вопрос ${st.idx + 1} / ${st.questions.length}`),
+        el('span', { class: 'muted', style: 'margin-left:10px' }, `отвечено: ${answered}`)),
+      el('div', { class: 'exam-timer' + (remain <= 60 ? ' low' : ''), id: 'exam-timer' }, fmtTime(remain)),
+    ),
+    el('div', { class: 'progress', style: 'margin-bottom:16px' },
+      el('span', { style: `width:${Math.round((st.idx + 1) / st.questions.length * 100)}%` })),
+    el('div', { class: 'card mcq' },
+      el('div', { class: 'q' }, q.q),
+      el('div', { class: 'options' },
+        ...q.options.map((opt, i) => {
+          const picked = st.answers[st.idx] === i;
+          return el('button', {
+            class: 'option' + (picked ? ' picked' : ''),
+            onClick: () => { st.answers[st.idx] = i; render(); },
+          }, opt);
+        }),
+      ),
+    ),
+    el('div', { class: 'nav-row' },
+      el('button', { class: 'btn secondary', disabled: st.idx === 0 ? '' : false,
+        onClick: () => { if (st.idx > 0) { st.idx--; render(); } } }, '← Назад'),
+      el('span', { class: 'nav-counter muted' }, `${answered}/${st.questions.length} отвечено`),
+      st.idx < st.questions.length - 1
+        ? el('button', { class: 'btn', onClick: () => { st.idx++; render(); } }, 'Далее →')
+        : el('button', { class: 'btn', onClick: () => confirmFinish() }, 'Завершить ✓'),
+    ),
+    el('div', { class: 'sub-actions' },
+      el('button', { class: 'link-btn', onClick: () => confirmFinish() }, 'Завершить и увидеть результат'),
+      el('button', { class: 'link-btn', onClick: () => {
+        if (confirm('Прервать экзамен без сохранения результата?')) { stopExamTimer(); examState = null; render(); }
+      } }, 'Прервать'),
+    ),
+    el('div', { class: 'card' },
+      el('div', { class: 'muted', style: 'font-size:13px;margin-bottom:8px' }, 'Навигация по вопросам'),
+      el('div', { class: 'exam-nav' },
+        ...st.questions.map((_, i) => el('button', {
+          class: 'exam-nav-btn' + (i === st.idx ? ' current' : '') + (st.answers[i] != null ? ' answered' : ''),
+          onClick: () => { st.idx = i; render(); },
+        }, String(i + 1))),
+      ),
+    ),
+  );
+}
+
+function confirmFinish() {
+  const un = examState.answers.filter((a) => a === null).length;
+  if (un > 0 && !confirm(`Не отвечено вопросов: ${un}. Всё равно завершить экзамен?`)) return;
+  finishExam();
+}
+
+function finishExam() {
+  if (!examState || examState.finished) return;
+  stopExamTimer();
+  const st = examState;
+  const durationSec = Math.min(st.limitSec, Math.round((Date.now() - st.startMs) / 1000));
+  let correct = 0;
+  const byCat = {};
+  st.questions.forEach((q, i) => {
+    const cat = getTopic(q.topicId).category;
+    byCat[cat] ||= { correct: 0, total: 0 };
+    byCat[cat].total += 1;
+    if (st.answers[i] === q.correct) { correct += 1; byCat[cat].correct += 1; }
+  });
+  const total = st.questions.length;
+  const pct = Math.round(correct / total * 100);
+  const now = new Date();
+  const dateStr = now.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  st.finished = true;
+  st.result = { correct, total, pct, durationSec, byCat };
+  saveExamAttempt({ date: now.toISOString(), dateStr, correct, total, pct, durationSec });
+  render();
+}
+
+function renderExamResult() {
+  const st = examState;
+  const r = st.result;
+  const verdict = r.pct >= 85 ? ['Отлично', 'var(--good)']
+    : r.pct >= 70 ? ['Хорошо', 'var(--accent)']
+    : r.pct >= 55 ? ['Удовлетворительно', 'var(--warn)']
+    : ['Нужно ещё поработать', 'var(--bad)'];
+
+  app.append(
+    el('h1', { class: 'h1' }, 'Результат экзамена'),
+    el('div', { class: 'card', style: 'text-align:center' },
+      el('div', { style: `font-size:56px;font-weight:800;line-height:1.1;color:${verdict[1]}` }, `${r.pct}%`),
+      el('div', { style: `font-size:18px;font-weight:600;color:${verdict[1]};margin:4px 0 8px` }, verdict[0]),
+      el('p', { class: 'muted' }, `Правильно ${r.correct} из ${r.total} · затрачено ${fmtTime(r.durationSec)}`),
+    ),
+    el('div', { class: 'card' },
+      el('div', { class: 'h2' }, 'По разделам'),
+      ...Object.entries(CATEGORIES).map(([k, c]) => {
+        const b = r.byCat[k];
+        if (!b) return null;
+        const p = Math.round(b.correct / b.total * 100);
+        return el('div', { style: 'margin-bottom:10px' },
+          el('div', { class: 'muted', style: 'display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px' },
+            el('span', {}, c.label), el('span', {}, `${b.correct}/${b.total} · ${p}%`)),
+          el('div', { class: 'progress' }, el('span', { style: `width:${p}%` })),
+        );
+      }),
+    ),
+    examMistakesCard(st),
+    el('div', { class: 'row' },
+      el('button', { class: 'btn', onClick: () => { examState = null; render(); } }, '↻ Пройти ещё раз'),
+      el('button', { class: 'btn secondary', onClick: () => navigate('dashboard') }, 'На дашборд'),
+    ),
+    examHistoryCard(loadExamHistory()),
+  );
+}
+
+function examMistakesCard(st) {
+  const wrong = [];
+  st.questions.forEach((q, i) => { if (st.answers[i] !== q.correct) wrong.push({ q, picked: st.answers[i] }); });
+  if (!wrong.length) {
+    return el('div', { class: 'card' }, el('div', { class: 'h2' }, 'Разбор'),
+      el('p', { class: 'muted' }, 'Ошибок нет — блестяще! 🎉'));
+  }
+  return el('div', { class: 'card' },
+    el('div', { class: 'h2' }, `Разбор ошибок (${wrong.length})`),
+    el('p', { class: 'muted', style: 'font-size:13px;margin-top:0' }, 'Нажми на вопрос, чтобы увидеть верный ответ и пояснение.'),
+    ...wrong.map(({ q, picked }) => el('details', { class: 'details-block' },
+      el('summary', { class: 'details-summary' }, q.q),
+      el('div', { class: 'details-body' },
+        el('p', {}, el('strong', { style: 'color:var(--good)' }, 'Верно: '), q.options[q.correct]),
+        el('p', {}, el('strong', { style: 'color:var(--bad)' }, 'Твой ответ: '), picked == null ? '— (не отвечено)' : q.options[picked]),
+        q.explanation ? el('p', { class: 'muted' }, q.explanation) : null,
+        el('a', { href: '#topic?id=' + q.topicId, class: 'btn ghost', style: 'text-decoration:none;display:inline-block;margin-top:6px' }, `Открыть тему ${q.topicId} →`),
+      ),
+    )),
+  );
 }
 
 // ——— Старт ———
